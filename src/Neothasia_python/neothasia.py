@@ -582,17 +582,20 @@ class NeothesiaApp:
 if __name__ == "__main__":
     # --- MIDI- en Soundfont-paden ---
     midiFileName = "Alan Walker - Faded (Piano Cover Tutorial - Easy) (midi by Carlo Prato) (www.cprato.com).mid"
+    soundfontFileName = "GeneralUser GS FluidSynth.sf2"
     # Dit is het relatieve pad vanuit de map waar je script staat
     midi_base_dir = os.path.join(os.path.dirname(__file__), "..", "..", "midi")
+    soundfont_base_dir = os.path.join(os.path.dirname(__file__), "..", "..", "soundfonts")
     midi_file_to_play = os.path.abspath(os.path.join(midi_base_dir, midiFileName))
 
     # Specifiek pad voor Windows indien nodig, anders gebruikt hij de relatieve variant.
     # Pas DIT PAD aan als je op Windows werkt en het bestand niet wordt gevonden!
     if os.name == "nt":
         # Voorbeeld Windows-specifiek pad: C:\Users\m.erasmus\OneDrive - Fugro\Programmacode\python\uitprobeersels\Geluid_en_muziek\Neothasia\midi
-        windows_base_path = r"C:\\Users\\m.erasmus\\OneDrive - Fugro\\Programmacode\\python\\uitprobeersels\\Geluid_en_muziek\\Neothasia"
-        midi_file_to_play = os.path.join(windows_base_path, midiFileName)
-        # print(f"Windows pad gebruikt: {midi_file_to_play}") # Debugging
+        if(not os.path.exists(midi_file_to_play)):
+            windows_base_path = r"C:\\Users\\m.erasmus\\OneDrive - Fugro\\Programmacode\\python\\uitprobeersels\\Geluid_en_muziek\\Neothasia"
+            midi_file_to_play = os.path.join(windows_base_path, midiFileName)
+            # print(f"Windows pad gebruikt: {midi_file_to_play}") # Debugging
 
     # Soundfont pad
     # VERVANG DIT MET HET PAD NAAR JOUW .sf2 BESTAND!
@@ -600,7 +603,7 @@ if __name__ == "__main__":
     # en plaats deze in een 'soundfonts' map naast je script, of geef het volledige pad op.
     # soundfont_base_dir = os.path.join(os.path.dirname(__file__), "soundfonts")
     # soundfont_path = os.path.abspath(os.path.join(soundfont_base_dir, "GeneralUser GS FluidSynth.sf2"))
-    soundfont_path = f"{midi_base_dir}/GeneralUser GS FluidSynth.sf2" # Voorbeeld: als het SF2 in dezelfde map staat
+    soundfont_path =os.path.abspath(os.path.join(soundfont_base_dir, soundfontFileName)) # Voorbeeld soundfont pad
 
     # Controleer of het MIDI-bestand bestaat
     if not os.path.exists(midi_file_to_play):
