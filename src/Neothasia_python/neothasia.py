@@ -4,6 +4,7 @@ import os
 import time
 import rtmidi # Voor MIDI output
 import fluidsynth # Voor audio synthese met soundfonts
+# version a8e6b1d2-c3f4-4e5a-8b9c-0d1e2f3a4b5c
 
 # --- Constanten voor de weergave ---
 SCREEN_WIDTH = 800
@@ -581,8 +582,8 @@ class NeothesiaApp:
 # --- Hoofdprogramma uitvoeren ---
 if __name__ == "__main__":
     # --- MIDI- en Soundfont-paden ---
-    midiFileName = "Alan Walker - Faded (Piano Cover Tutorial - Easy) (midi by Carlo Prato) (www.cprato.com).mid"
-    soundfontFileName = "GeneralUser GS FluidSynth.sf2"
+    midiFileName = "beethoven_opus10_1.mid"
+    soundfontFileName = "GeneralUser-GS.sf2"
     # Dit is het relatieve pad vanuit de map waar je script staat
     midi_base_dir = os.path.join(os.path.dirname(__file__), "..", "..", "midi")
     soundfont_base_dir = os.path.join(os.path.dirname(__file__), "..", "..", "soundfonts")
