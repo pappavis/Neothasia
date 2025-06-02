@@ -2,7 +2,7 @@ import pygame
 import sys
 import tkinter as tk
 from tkinter import filedialog
-from midi_parser import load_midi_notes
+from github.Neothasia.src.Neothasia_python.qwen_versie.midi_parser import load_midi_notes
 import mido
 
 
