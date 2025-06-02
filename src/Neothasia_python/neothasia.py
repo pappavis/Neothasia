@@ -1,3 +1,5 @@
+# ref https://gemini.google.com/gem/coding-partner/7a390be7cebfa0ec
+
 import pygame
 import mido
 import os
