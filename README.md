@@ -6,7 +6,7 @@ Vibe coding experiment.
 <img src="./img/neothasia.png"><br>
 
 # Installatie
-Je benodig minimaal <a href="https://python.org">python3.11</a> nodig.
+Je benodig minimaal <a href="https://python.org" target="_blank">python3.11</a> nodig.
 
 ```bash
 pip install pygame mido python-rtmidi python-fluidsynth
