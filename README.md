@@ -25,8 +25,8 @@ neothasia/
 └── assets/
     └── fonts/
     └── soundfonts/
-```        └── GeneralUser-GS.sf2
-
+        └── GeneralUser-GS.sf2
+```
 
 Download <a href='https://github.com/mrbumpy409/GeneralUser-GS/blob/main/GeneralUser-GS.sf2'>GeneralUser-GS.sf2</a>
 
