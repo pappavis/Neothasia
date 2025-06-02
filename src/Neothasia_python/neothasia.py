@@ -1,650 +1,935 @@
 # ref https://gemini.google.com/gem/coding-partner/7a390be7cebfa0ec
-
+# https://github.com/sfzinstruments/SplendidGrandPiano
+# Versie: 8a6e7c1d
 import pygame
-import mido
 import os
-import time
-import rtmidi # Voor MIDI output
-import fluidsynth # Voor audio synthese met soundfonts
-# version a8e6b1d2-c3f4-4e5a-8b9c-0d1e2f3a4b5c
+import sys
+import math
+import mido # Zorg dat mido geïnstalleerd is: pip install mido
+from tkinter import Tk, filedialog # Voor bestandskiezer
 
-# --- Constanten voor de weergave ---
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 600
-NOTE_SPEED = 300 # pixels per seconde (hoe snel noten vallen, hoger is sneller)
-KEYBOARD_HEIGHT = 100 # Hoogte van het virtuele toetsenbord onderaan
+# --- Constanten en configuratie ---
+SCREEN_WIDTH = 1200
+SCREEN_HEIGHT = 800
+FPS = 60 # Frames per seconde
 
 # Kleuren
-BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
-NOTE_COLOR = (0, 200, 0) # Groen voor noten
-KEY_WHITE_COLOR = (255, 255, 255)
-KEY_BLACK_COLOR = (50, 50, 50)
-KEY_OUTLINE_COLOR = (100, 100, 100) # Rand van toetsen
-HIGHLIGHT_COLOR = (255, 255, 0) # Geel voor toetsenbord highlight
+BLACK = (0, 0, 0)
+GRAY = (50, 50, 50)
+LIGHT_GRAY = (100, 100, 100)
+DARK_GRAY = (30, 30, 30)
+BLUE = (0, 100, 255)
+RED = (255, 0, 0)
+GREEN = (0, 200, 0)
+YELLOW = (255, 255, 0)
+NOTE_COLOR = (0, 200, 200) # Cyaan-achtig voor vallende noten
 
-# MIDI nootbereik dat we weergeven (bijv. C3 tot C6)
-MIN_MIDI_NOTE = 48 # C3
-MAX_MIDI_NOTE = 84 # C6 (3 octaven + 1 noot, 37 toetsen)
-NUM_DISPLAYED_NOTES = MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1
+# Piano toetsenbord layout
+OCTAVE_START_MIDI = 21 # A0
+OCTAVE_END_MIDI = 108 # C8
+WHITE_KEY_WIDTH = 20
+BLACK_KEY_WIDTH = WHITE_KEY_WIDTH * 0.6
+BLACK_KEY_HEIGHT_RATIO = 0.6 # Zwarte toets is 60% van witte toets hoogte
+KEYBOARD_HEIGHT = 120
+ROLL_HEIGHT = SCREEN_HEIGHT - KEYBOARD_HEIGHT
 
-# --- Helper functie voor nootnamen ---
-def get_note_name(midi_note_number):
-    """Converteert een MIDI-nootnummer naar een nootnaam (bijv. C4, A#3)."""
-    note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-    octave = (midi_note_number // 12) - 1 # MIDI C0 is noot 12, dus C-1 is 0
-    note_name = note_names[midi_note_number % 12]
+# Noten namen
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+# --- Helper functies ---
+def get_note_name(midi_note):
+    """Converteert een MIDI-nootnummer naar een naam (e.g., C4, A#3)."""
+    octave = (midi_note // 12) - 1 # MIDI C0 is octaaf -1, C4 is octaaf 3
+    note_name = NOTE_NAMES[midi_note % 12]
     return f"{note_name}{octave}"
 
-# --- Klasse: MidiParser ---
-class MidiParser:
+# --- MIDI Parsing (hergebruik van de eerder gemaakte functie) ---
+def parse_midi_file(midi_filepath):
     """
-    Verantwoordelijk voor het laden en parsen van MIDI-bestanden
-    en het extraheren van nootinformatie per track/instrument.
+    Parset een MIDI-bestand en extraheert noteninformatie.
+
+    Args:
+        midi_filepath (str): Het pad naar het MIDI-bestand.
+
+    Returns:
+        tuple: Een tuple bestaande uit:
+            - list: Een lijst van dicts, waarbij elke dict een noot representeert
+                    met 'note', 'start_time', 'duration', 'velocity', 'track_name', 'channel'.
+            - list: Een lijst van tracknamen (str).
+            - int: De ticks_per_beat van het MIDI-bestand.
+            - dict: Een dictionary met tempo-wijzigingen: {absolute_time_in_ticks: tempo_in_microseconds_per_beat}.
     """
-    def __init__(self, midi_filepath):
-        self.midi_filepath = midi_filepath
-        self.tracks_data = {} # {track_idx: {'notes': [], 'name': 'Track Name'}}
-        self._load_midi()
+    notes_data = []
+    track_names = []
+    tempo_changes = {} # {absolute_time_in_ticks: tempo_in_microseconds_per_beat}
 
-    def _load_midi(self):
-        """
-        Laadt en parseert het MIDI-bestand.
-        Extraheert note_on/note_off berichten met hun absolute tijden en duur,
-        gegroepeerd per MIDI-track.
-        """
-        try:
-            mid = mido.MidiFile(self.midi_filepath)
-        except FileNotFoundError:
-            print(f"Fout: Bestand niet gevonden op {self.midi_filepath}")
-            return
-        except Exception as e:
-            print(f"Fout bij het laden van MIDI-bestand: {e}")
-            return
+    try:
+        mid = mido.MidiFile(midi_filepath)
+    except FileNotFoundError:
+        print(f"Fout: Bestand niet gevonden op {midi_filepath}")
+        return [], [], 0, {}
+    except Exception as e:
+        print(f"Fout bij het laden van het MIDI-bestand: {e}")
+        return [], [], 0, {}
 
-        # Initialiseer tempo (standaard 120 BPM) en ticks_per_beat
-        ticks_per_beat = mid.ticks_per_beat
-        default_tempo = mido.bpm2tempo(120)
+    ticks_per_beat = mid.ticks_per_beat
+    
+    # Tijdelijke opslag voor actieve noten
+    # {note_number: {'start_time': absolute_time_in_ticks, 'velocity': velocity, 'channel': channel, 'track_name': track_name}}
+    active_notes = {}
 
-        for i, track in enumerate(mid.tracks):
-            track_name = f"Track {i}"
-            # Probeer een tracknaam te vinden
-            for msg in track:
-                if msg.type == 'track_name':
-                    track_name = msg.name
-                    break
-            
-            self.tracks_data[i] = {'name': track_name, 'notes': []}
-            
-            active_note_starts = {} # {note_number: start_time_in_seconds}
-            current_abs_seconds = 0.0
-            last_abs_ticks = 0
-            current_tempo = default_tempo # Reset tempo per track for simplicity (might be inaccurate for global tempo changes)
+    # Absolute tijd teller voor elke track (in ticks)
+    # We moeten de tijd per track bijhouden omdat messages in een track relatief zijn aan elkaar.
+    track_absolute_times = {i: 0 for i in range(len(mid.tracks))}
 
-            for msg in track:
-                delta_ticks = msg.time
-                
-                # Update absolute tijd
-                current_abs_seconds += mido.tick2second(delta_ticks, ticks_per_beat, current_tempo)
+    for i, track in enumerate(mid.tracks):
+        track_name = f"Track {i+1}" # Standaardnaam
+        # Probeer de tracknaam te vinden
+        for msg in track:
+            if msg.type == 'track_name':
+                track_name = msg.name
+                break
+        track_names.append(track_name)
+        
+        current_track_time = 0 # Tijd in ticks voor de huidige track
 
-                if msg.type == 'set_tempo':
-                    current_tempo = msg.tempo
-                elif msg.type == 'note_on' and msg.velocity > 0:
-                    active_note_starts[msg.note] = current_abs_seconds
-                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                    if msg.note in active_note_starts:
-                        start_time = active_note_starts.pop(msg.note)
-                        duration = current_abs_seconds - start_time
-                        if duration >= 0.001: # Filter zeer korte (0-duur) noten
-                            self.tracks_data[i]['notes'].append({
-                                'note': msg.note,
-                                'start_time': start_time,
+        for msg in track:
+            current_track_time += msg.time # Voeg relatieve tijd toe aan absolute tijd voor deze track
+
+            if msg.type == 'note_on':
+                # Als velocity 0 is, behandelen we het als een note_off
+                if msg.velocity > 0:
+                    key = (msg.note, msg.channel, track_name) # Unieke sleutel voor de noot
+                    active_notes[key] = {
+                        'start_time': current_track_time,
+                        'velocity': msg.velocity,
+                        'channel': msg.channel,
+                        'track_name': track_name
+                    }
+                else: # velocity == 0, dus het is een note_off
+                    key = (msg.note, msg.channel, track_name)
+                    if key in active_notes:
+                        note_info = active_notes.pop(key)
+                        duration = current_track_time - note_info['start_time']
+                        if duration > 0: # Zorg ervoor dat de duur positief is
+                            notes_data.append({
+                                'note': note_info['note'],
+                                'start_time': note_info['start_time'],
                                 'duration': duration,
-                                'velocity': msg.velocity,
-                                'track_idx': i # Voeg track-index toe
+                                'velocity': note_info['velocity'],
+                                'track_name': note_info['track_name'],
+                                'channel': note_info['channel']
                             })
-            self.tracks_data[i]['notes'].sort(key=lambda n: n['start_time'])
+            elif msg.type == 'note_off':
+                key = (msg.note, msg.channel, track_name)
+                if key in active_notes:
+                    note_info = active_notes.pop(key)
+                    duration = current_track_time - note_info['start_time']
+                    if duration > 0:
+                        notes_data.append({
+                            'note': note_info['note'],
+                            'start_time': note_info['start_time'],
+                            'duration': duration,
+                            'velocity': note_info['velocity'],
+                            'track_name': note_info['track_name'],
+                            'channel': note_info['channel']
+                        })
+            elif msg.type == 'set_tempo':
+                # Tempo-wijzigingen worden opgeslagen met de absolute tijd in ticks
+                tempo_changes[current_track_time] = msg.tempo
 
-    def get_track_names(self):
-        """Geeft een lijst van (track_idx, track_name) tuples terug."""
-        return [(idx, data['name']) for idx, data in self.tracks_data.items()]
+    # Sorteer de noten op starttijd voor eenvoudigere verwerking later
+    notes_data.sort(key=lambda x: x['start_time'])
 
-    def get_notes_for_track(self, track_idx):
-        """Geeft de geparseerde noten voor een specifieke track terug."""
-        return self.tracks_data.get(track_idx, {}).get('notes', [])
-
-# --- Klasse: Note (voor vallende noten) ---
-class Note:
-    """
-    Representeert een enkele vallende noot op het scherm.
-    Beheert zijn visuele eigenschappen en positie.
-    """
-    def __init__(self, midi_note_data, note_x_map, note_speed, screen_height, keyboard_height):
-        self.note_num = midi_note_data['note']
-        self.start_midi_time = midi_note_data['start_time']
-        self.duration = midi_note_data['duration']
-        self.velocity = midi_note_data['velocity']
-        
-        # Haal de x-positie en breedte van de bijbehorende toets op
-        x_pos = note_x_map.get(self.note_num, 0)
-        width = note_x_map.get(f"{self.note_num}_width", SCREEN_WIDTH / NUM_DISPLAYED_NOTES)
-        
-        self.note_speed = note_speed
-        self.screen_height = screen_height
-        self.keyboard_height = keyboard_height
-
-        self.color = NOTE_COLOR
-        
-        # De hoogte van de noot is evenredig met zijn duur en snelheid. Minimaal 1 pixel.
-        self.height = max(1, int(self.duration * self.note_speed))
-        
-        # Initiële y-positie wordt in update() berekend op basis van afspeeltijd.
-        self.rect = pygame.Rect(x_pos, 0, width, self.height)
-
-    def update(self, current_midi_time):
-        """
-        Werkt de y-positie van de noot bij op basis van de huidige MIDI-tijd.
-        Dit simuleert het 'vallen' van de noot.
-        """
-        # De onderkant van de noot moet de bovenkant van het toetsenbord raken
-        # (screen_height - keyboard_height) precies op self.start_midi_time.
-        
-        time_to_reach_bottom = self.start_midi_time - current_midi_time
-        
-        self.rect.y = (self.screen_height - self.keyboard_height) - \
-                      (time_to_reach_bottom * self.note_speed) - \
-                      self.rect.height
-
-    def draw(self, screen):
-        """Tekent de noot op het Pygame-scherm."""
-        pygame.draw.rect(screen, self.color, self.rect)
-
-    def is_active_and_visible(self, current_midi_time):
-        """
-        Controleert of de noot nog relevant is om te tekenen en te verwerken.
-        Een noot is relevant als zijn eindtijd (start + duur) nog niet is gepasseerd
-        EN hij nog op het scherm (of net daarbuiten) is.
-        """
-        return (self.start_midi_time + self.duration + 0.1) >= current_midi_time and \
-               self.rect.top < self.screen_height # Check if the top is still above screen bottom
-
-# --- Klasse: Keyboard ---
-class Keyboard:
-    """
-    Tekent het virtuele pianotoetsenbord onderaan het scherm.
-    Beheert de lay-out van witte en zwarte toetsen en hun highlighting.
-    """
-    def __init__(self, min_midi_note, max_midi_note, screen_width, keyboard_height, screen_height):
-        self.min_midi_note = min_midi_note
-        self.max_midi_note = max_midi_note
-        self.screen_width = screen_width
-        self.keyboard_height = keyboard_height
-        self.screen_height = screen_height
-        self.keys = [] # Lijst om de toets-objecten op te slaan
-        self.active_keys = set() # Set van MIDI-noten die momenteel ingedrukt zijn (voor highlighting)
-        
-        self.note_x_map = {} # Map van MIDI-noot naar x-positie en breedte (voor vallende noten)
-
-        self._generate_keyboard_layout()
-        self._create_note_x_map()
-
-    def _generate_keyboard_layout(self):
-        """Genereert posities en afmetingen voor de virtuele pianotoetsen."""
-        white_keys_midi_values = [0, 2, 4, 5, 7, 9, 11] # C, D, E, F, G, A, B (mod 12)
-        
-        white_key_count = 0
-        for note_num in range(self.min_midi_note, self.max_midi_note + 1):
-            if (note_num % 12) in white_keys_midi_values:
-                white_key_count += 1
-                
-        white_key_width = self.screen_width / white_key_count
-        
-        current_white_x = 0
-        white_key_rects = {} 
-        
-        # Eerste pas: genereer alle witte toetsen
-        for note_num in range(self.min_midi_note, self.max_midi_note + 1):
-            if (note_num % 12) in white_keys_midi_values:
-                key_rect = pygame.Rect(current_white_x, self.screen_height - self.keyboard_height, 
-                                       white_key_width, self.keyboard_height)
-                self.keys.append({'note': note_num, 'rect': key_rect, 'color': KEY_WHITE_COLOR, 'is_black': False})
-                white_key_rects[note_num] = key_rect
-                current_white_x += white_key_width
-        
-        # Tweede pas: genereer alle zwarte toetsen bovenop de witte toetsen
-        black_key_width = white_key_width * 0.6
-        black_key_height = self.keyboard_height * 0.6
-        
-        for note_num in range(self.min_midi_note, self.max_midi_note + 1):
-            if (note_num % 12) not in white_keys_midi_values: # Het is een zwarte toets
-                # Zoek de *volgende* witte toets om de zwarte toets correct te positioneren.
-                next_white_note = None
-                for n_val in range(note_num + 1, self.max_midi_note + 1):
-                    if (n_val % 12) in white_keys_midi_values:
-                        next_white_note = n_val
-                        break
-                
-                if next_white_note is not None and next_white_note in white_key_rects:
-                    next_white_key_rect = white_key_rects[next_white_note]
-                    x_pos = next_white_key_rect.left - (black_key_width / 2)
-                    
-                    key_rect = pygame.Rect(x_pos, self.screen_height - self.keyboard_height - black_key_height, 
-                                           black_key_width, black_key_height)
-                    self.keys.append({'note': note_num, 'rect': key_rect, 'color': KEY_BLACK_COLOR, 'is_black': True})
-
-        self.keys.sort(key=lambda k: k['is_black']) # Witte toetsen eerst, dan zwarte toetsen
-
-    def _create_note_x_map(self):
-        """
-        Maakt een map van MIDI-nootnummer naar de x-positie en breedte van de corresponderende toets.
-        """
-        for key_info in self.keys:
-            self.note_x_map[key_info['note']] = key_info['rect'].x
-            self.note_x_map[f"{key_info['note']}_width"] = key_info['rect'].width
-
-    def press_key(self, midi_note_number):
-        """Markeert een toets als ingedrukt."""
-        if self.min_midi_note <= midi_note_number <= self.max_midi_note:
-            self.active_keys.add(midi_note_number)
-
-    def release_key(self, midi_note_number):
-        """Markeert een toets als losgelaten."""
-        if midi_note_number in self.active_keys:
-            self.active_keys.remove(midi_note_number)
-
-    def draw(self, screen):
-        """Tekent het virtuele toetsenbord en hun labels op het scherm."""
-        font = pygame.font.Font(None, 20) # Klein lettertype voor nootnamen
-
-        for key_info in self.keys:
-            # Teken de basiskleur van de toets
-            current_color = key_info['color']
-            if key_info['note'] in self.active_keys:
-                current_color = HIGHLIGHT_COLOR # Highlight als toets ingedrukt is
-
-            pygame.draw.rect(screen, current_color, key_info['rect'])
-            pygame.draw.rect(screen, KEY_OUTLINE_COLOR, key_info['rect'], 1) # Randje
-
-            # Teken de nootnaam
-            note_name_str = get_note_name(key_info['note'])
-            text_surface = font.render(note_name_str, True, BLACK if current_color == KEY_WHITE_COLOR else WHITE)
-            
-            # Positioneer de tekst op de toets
-            text_rect = text_surface.get_rect(centerx=key_info['rect'].centerx)
-            if key_info['is_black']:
-                # Zwarte toetsen: tekst bovenaan
-                text_rect.top = key_info['rect'].top + 5
-            else:
-                # Witte toetsen: tekst onderaan
-                text_rect.bottom = key_info['rect'].bottom - 5
-            screen.blit(text_surface, text_rect)
-
-# --- Klasse: MidiPlayer (voor audio afspelen) ---
-class MidiPlayer:
-    """
-    Beheert het afspelen van MIDI-noten via fluidsynth.
-    """
-    def __init__(self, soundfont_path):
-        self.fs = None
-        self.soundfont_path = soundfont_path
-        self._init_fluidsynth()
-        self.midi_out = None # rtmidi output port
-        self._init_midi_output()
-
-    def _init_fluidsynth(self):
-        """Initialiseert fluidsynth en laadt de soundfont."""
-        try:
-            # fluidsynth.init() kan problemen geven op sommige systemen.
-            # We initialiseren direct de Synth.
-            # Instellingen voor lage latentie (kan worden geoptimaliseerd)
-            self.fs = fluidsynth.Synth()
-            self.fs.start(driver='alsa', device='default') # 'alsa' for Linux, 'coreaudio' for macOS, 'dsound' for Windows. Or 'portaudio' for cross-platform.
-            
-            if not os.path.exists(self.soundfont_path):
-                print(f"Fout: Soundfont-bestand niet gevonden op {self.soundfont_path}")
-                print("Download een .sf2 soundfont (bijv. 'GeneralUser GS FluidSynth.sf2') en plaats het op het juiste pad.")
-                self.fs = None # Disable fluidsynth if soundfont is missing
-                return
-
-            sfid = self.fs.sfload(self.soundfont_path)
-            self.fs.program_select(0, sfid, 0, 0) # Kanaal 0, Soundfont ID, Bank 0, Preset 0 (Grand Piano)
-            print(f"FluidSynth geladen met soundfont: {self.soundfont_path}")
-        except Exception as e:
-            print(f"Fout bij initialiseren FluidSynth: {e}")
-            print("Zorg ervoor dat FluidSynth zelf is geïnstalleerd op je systeem en de soundfont beschikbaar is.")
-            self.fs = None
-
-    def _init_midi_output(self):
-        """Initialiseert rtmidi output voor directe MIDI-berichten."""
-        try:
-            self.midi_out = rtmidi.MidiOut()
-            available_ports = self.midi_out.get_ports()
-            
-            if available_ports:
-                print("Beschikbare MIDI-uitvoerpoorten:", available_ports)
-                # Probeer een virtuele poort te openen of een bestaande
-                try:
-                    self.midi_out.open_virtual_port("Neothesia MIDI Out")
-                    print("Virtuele MIDI-uitvoerpoort geopend.")
-                except rtmidi.midiutil.PortNotOpenError:
-                    print("Kon geen virtuele poort openen, probeer de eerste beschikbare.")
-                    self.midi_out.open_port(0) # Open de eerste beschikbare poort
-                    print(f"Geopende MIDI-uitvoerpoort: {self.midi_out.get_port_name(0)}")
-            else:
-                print("Geen MIDI-uitvoerpoorten beschikbaar. MIDI-output zal niet werken.")
-                self.midi_out = None
-        except Exception as e:
-            print(f"Fout bij initialiseren rtmidi: {e}")
-            self.midi_out = None
-
-    def play_note(self, note_num, velocity=100, channel=0):
-        """Speelt een MIDI-noot af (note_on)."""
-        if self.fs:
-            self.fs.noteon(channel, note_num, velocity)
-        if self.midi_out:
-            self.midi_out.send_message([mido.Message('note_on', note=note_num, velocity=velocity, channel=channel).bytes()])
-
-    def stop_note(self, note_num, channel=0):
-        """Stopt een MIDI-noot (note_off)."""
-        if self.fs:
-            self.fs.noteoff(channel, note_num)
-        if self.midi_out:
-            self.midi_out.send_message([mido.Message('note_off', note=note_num, velocity=0, channel=channel).bytes()])
-
-    def stop_all_notes(self):
-        """Stopt alle spelende noten."""
-        if self.fs:
-            self.fs.all_notes_off()
-        if self.midi_out:
-            # Stuur 'all notes off' control change message
-            self.midi_out.send_message([mido.Message('control_change', control=123, value=0).bytes()])
-            
-    def close(self):
-        """Sluit de MIDI-speler en fluidsynth."""
-        if self.fs:
-            self.fs.delete()
-        if self.midi_out:
-            self.midi_out.close_port()
-
-# --- Hoofdklasse: NeothesiaApp ---
-class NeothesiaApp:
-    """
-    De hoofdapplicatieklasse voor de Neothesia visualizer.
-    Beheert de Pygame-loop, rendering, game-logica, en audio-afspelen.
-    """
-    def __init__(self, midi_filepath, soundfont_path):
-        pygame.init()
-        pygame.font.init() # Initialiseer font module
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("Neothesia Python MVP")
-        self.clock = pygame.time.Clock()
-        
-        self.midi_player = MidiPlayer(soundfont_path)
-        
-        self.midi_parser = MidiParser(midi_filepath)
-        self.all_midi_tracks_data = self.midi_parser.tracks_data # Alle data, per track
-
-        if not self.all_midi_tracks_data:
-            print("Geen noten/tracks gevonden in MIDI-bestand. Applicatie wordt afgesloten.")
-            self.running = False
-            return
-
-        self.keyboard = Keyboard(MIN_MIDI_NOTE, MAX_MIDI_NOTE, SCREEN_WIDTH, KEYBOARD_HEIGHT, SCREEN_HEIGHT)
-        self.active_notes_on_screen = [] # Note-objecten die nu op het scherm zijn
-        self.playing_midi_notes = {} # {note_num: time_on_midi_player} voor audio
-
-        self.midi_playback_time = 0.0 # Huidige tijd in de MIDI-afspeling (seconde)
-        self.note_data_index = 0 # Index in de GEFILTERDE notenlijst
-
-        self.screen_travel_time = (SCREEN_HEIGHT - KEYBOARD_HEIGHT) / NOTE_SPEED
-
-        self.playback_state = 'stopped' # 'stopped', 'playing', 'paused'
-        self.selected_track_idx = None # Track die wordt afgespeeld en gevisualiseerd
-
-        self._initialize_track_selection()
-        
-        self.running = True
-
-    def _initialize_track_selection(self):
-        """
-        Toont beschikbare tracks en laat de gebruiker er een selecteren.
-        """
-        print("\n--- Selecteer een MIDI-track ---")
-        track_options = self.midi_parser.get_track_names()
-        
-        if not track_options:
-            print("Geen tracks gevonden in het MIDI-bestand. Kan niet verder.")
-            self.running = False
-            return
-            
-        for idx, name in track_options:
-            print(f"[{idx}] - {name}")
-        
-        while self.selected_track_idx is None:
-            try:
-                choice = input("Voer het nummer van de gewenste track in: ")
-                choice_idx = int(choice)
-                if choice_idx in self.all_midi_tracks_data:
-                    self.selected_track_idx = choice_idx
-                    self.filtered_midi_notes_data = sorted(self.all_midi_tracks_data[self.selected_track_idx]['notes'], key=lambda n: n['start_time'])
-                    print(f"Track '{self.all_midi_tracks_data[self.selected_track_idx]['name']}' geselecteerd.")
-                else:
-                    print("Ongeldige invoer. Probeer opnieuw.")
-            except ValueError:
-                print("Ongeldige invoer. Voer een nummer in.")
-        
-        if not self.filtered_midi_notes_data:
-            print(f"Track '{self.all_midi_tracks_data[self.selected_track_idx]['name']}' bevat geen noten. Applicatie wordt afgesloten.")
-            self.running = False
+    return notes_data, track_names, ticks_per_beat, tempo_changes
 
 
-    def _handle_input(self):
-        """Verwerkt Pygame-events, zoals het sluiten van het venster en toetsaanslagen."""
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:
-                    if self.playback_state == 'playing':
-                        self.playback_state = 'paused'
-                        self.midi_player.stop_all_notes() # Stop alle audio bij pauze
-                        print("Pauze.")
-                    elif self.playback_state == 'paused' or self.playback_state == 'stopped':
-                        self.playback_state = 'playing'
-                        print("Afspelen hervat.")
-                elif event.key == pygame.K_s: # 's' voor stop
-                    self.playback_state = 'stopped'
-                    self.midi_playback_time = 0.0
-                    self.note_data_index = 0
-                    self.active_notes_on_screen = []
-                    self.midi_player.stop_all_notes()
-                    self.playing_midi_notes = {} # Reset actieve audio noten
-                    self.keyboard.active_keys.clear() # Reset toetsenbord highlight
-                    print("Gestopt en gereset.")
-                
-                # Voor track selectie tijdens runtime (optioneel, kan complexer worden)
-                # Als je dit wilt, zou je een apart UI-scherm of overlay nodig hebben.
-                # Voor nu, doen we de selectie bij start.
+# --- UI Elementen (Knoppen, Dropdowns, Sliders) ---
+# Een simpele implementatie voor dropdown, knop en slider.
+# Voor een robuustere UI zou men een specifieke GUI-bibliotheek of een Pygame UI-uitbreiding gebruiken.
 
-    def _update_playback(self, dt):
-        """
-        Werkt de afspeeltijd en de status van noten bij als het afspelen actief is.
-        """
-        if self.playback_state == 'playing':
-            self.midi_playback_time += dt
+class Button:
+    def __init__(self, x, y, width, height, text, font, color, hover_color, action=None):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.font = font
+        self.color = color
+        self.hover_color = hover_color
+        self.action = action
+        self.is_hovered = False
 
-            # Verwerk noten voor visualisatie
-            while self.note_data_index < len(self.filtered_midi_notes_data) and \
-                  self.filtered_midi_notes_data[self.note_data_index]['start_time'] <= self.midi_playback_time + self.screen_travel_time:
-                
-                note_data = self.filtered_midi_notes_data[self.note_data_index]
-                
-                if MIN_MIDI_NOTE <= note_data['note'] <= MAX_MIDI_NOTE:
-                    new_note = Note(note_data, self.keyboard.note_x_map, NOTE_SPEED, SCREEN_HEIGHT, KEYBOARD_HEIGHT)
-                    self.active_notes_on_screen.append(new_note)
-                
-                self.note_data_index += 1
+    def draw(self, surface):
+        current_color = self.hover_color if self.is_hovered else self.color
+        pygame.draw.rect(surface, current_color, self.rect)
+        text_surf = self.font.render(self.text, True, BLACK)
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        surface.blit(text_surf, text_rect)
 
-            # Verwerk noten voor audio afspelen en toetsenbord highlighting
-            # Loop door alle noten in de filtered_midi_notes_data om te zien welke moeten starten of stoppen.
-            # Dit is efficiënter dan de 'active_notes_on_screen' lijst, omdat we hier alle noten tracken.
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEMOTION:
+            self.is_hovered = self.rect.collidepoint(event.pos)
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                if self.action:
+                    self.action()
+                return True
+        return False
 
-            # Noten die moeten starten
-            for i in range(len(self.filtered_midi_notes_data)):
-                note_data = self.filtered_midi_notes_data[i]
-                note_num = note_data['note']
-                
-                # Als de noot moet starten EN nog niet speelt
-                if self.midi_playback_time >= note_data['start_time'] and \
-                   note_num not in self.playing_midi_notes and \
-                   MIN_MIDI_NOTE <= note_num <= MAX_MIDI_NOTE: # Check bereik
-                    
-                    self.midi_player.play_note(note_num, note_data['velocity'])
-                    self.keyboard.press_key(note_num)
-                    self.playing_midi_notes[note_num] = note_data['start_time'] # Markeer als spelend
-                
-                # Optimalisatie: Als de noot al ver voorbij de huidige tijd is, stop met zoeken
-                # assuming the notes are sorted by start_time
-                if note_data['start_time'] > self.midi_playback_time + 0.1: # Kleine marge
+class Dropdown:
+    def __init__(self, x, y, width, height, options, font, default_selection_index=0):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.options = options
+        self.font = font
+        self.selected_option_index = default_selection_index
+        self.is_open = False
+        self.option_height = height
+        self.max_display_options = 5 # Hoeveel opties zichtbaar zijn in de dropdown
+
+    def draw(self, surface):
+        # Draw selected option
+        pygame.draw.rect(surface, LIGHT_GRAY, self.rect)
+        pygame.draw.rect(surface, BLACK, self.rect, 2)
+        text_surf = self.font.render(self.options[self.selected_option_index], True, BLACK)
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        surface.blit(text_surf, text_rect)
+
+        # Draw dropdown arrow
+        pygame.draw.polygon(surface, BLACK, [
+            (self.rect.right - 20, self.rect.centery - 5),
+            (self.rect.right - 10, self.rect.centery - 5),
+            (self.rect.right - 15, self.rect.centery + 5)
+        ])
+
+        # Draw open options
+        if self.is_open:
+            for i, option in enumerate(self.options):
+                if i >= self.max_display_options: # Beperk aantal zichtbare opties
                     break
-            
-            # Noten die moeten stoppen
-            notes_to_stop = []
-            for note_num in list(self.playing_midi_notes.keys()): # Kopieer lijst om te kunnen verwijderen
-                note_start_time = self.playing_midi_notes[note_num]
-                # Zoek de volledige nootdata om de duur te vinden
-                # Dit is minder efficiënt; idealiter sla je duur op in playing_midi_notes
-                # Voor MVP: zoek de eerste die matcht
-                found_note = next((n for n in self.filtered_midi_notes_data if n['note'] == note_num and n['start_time'] == note_start_time), None)
-                
-                if found_note and self.midi_playback_time >= (found_note['start_time'] + found_note['duration']):
-                    self.midi_player.stop_note(note_num)
-                    self.keyboard.release_key(note_num)
-                    notes_to_stop.append(note_num)
-            
-            for note_num in notes_to_stop:
-                del self.playing_midi_notes[note_num]
+                option_rect = pygame.Rect(self.rect.x, self.rect.bottom + i * self.option_height, self.rect.width, self.option_height)
+                pygame.draw.rect(surface, WHITE, option_rect)
+                pygame.draw.rect(surface, BLACK, option_rect, 1)
+                option_text_surf = self.font.render(option, True, BLACK)
+                option_text_rect = option_text_surf.get_rect(center=option_rect.center)
+                surface.blit(option_text_surf, option_text_rect)
 
-        # Update de y-positie van alle actieve noten op het scherm
-        for note in self.active_notes_on_screen:
-            note.update(self.midi_playback_time)
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                self.is_open = not self.is_open
+                return True
+            elif self.is_open:
+                for i, option in enumerate(self.options):
+                    if i >= self.max_display_options:
+                        break
+                    option_rect = pygame.Rect(self.rect.x, self.rect.bottom + i * self.option_height, self.rect.width, self.option_height)
+                    if option_rect.collidepoint(event.pos):
+                        self.selected_option_index = i
+                        self.is_open = False
+                        return True
+        return False
 
-        # Verwijder noten die niet langer relevant zijn (uit beeld of speeltijd voorbij).
-        self.active_notes_on_screen = [
-            note for note in self.active_notes_on_screen 
-            if note.is_active_and_visible(self.midi_playback_time)
+    def get_selected_option(self):
+        return self.options[self.selected_option_index]
+
+class Slider:
+    def __init__(self, x, y, width, height, min_val, max_val, initial_val, font, label=""):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.min_val = min_val
+        self.max_val = max_val
+        self.val = initial_val
+        self.font = font
+        self.label = label
+        self.dragging = False
+        self.handle_radius = height / 2
+
+    def draw(self, surface):
+        # Slider track
+        pygame.draw.line(surface, DARK_GRAY, (self.rect.x + self.handle_radius, self.rect.centery), 
+                         (self.rect.right - self.handle_radius, self.rect.centery), 5)
+        
+        # Slider handle
+        handle_x = self.rect.x + self.handle_radius + (self.val - self.min_val) / (self.max_val - self.min_val) * (self.rect.width - 2 * self.handle_radius)
+        pygame.draw.circle(surface, BLUE, (int(handle_x), self.rect.centery), int(self.handle_radius))
+        pygame.draw.circle(surface, BLACK, (int(handle_x), self.rect.centery), int(self.handle_radius), 2)
+
+        # Label and value
+        label_text = f"{self.label}: {self.val:.1f}" if isinstance(self.val, float) else f"{self.label}: {int(self.val)}"
+        text_surf = self.font.render(label_text, True, BLACK)
+        text_rect = text_surf.get_rect(midleft=(self.rect.right + 10, self.rect.centery))
+        surface.blit(text_surf, text_rect)
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            handle_x = self.rect.x + self.handle_radius + (self.val - self.min_val) / (self.max_val - self.min_val) * (self.rect.width - 2 * self.handle_radius)
+            handle_rect = pygame.Rect(handle_x - self.handle_radius, self.rect.centery - self.handle_radius, self.handle_radius * 2, self.handle_radius * 2)
+            if handle_rect.collidepoint(event.pos):
+                self.dragging = True
+                return True
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            self.dragging = False
+            return True
+        elif event.type == pygame.MOUSEMOTION and self.dragging:
+            normalized_x = (event.pos[0] - (self.rect.x + self.handle_radius)) / (self.rect.width - 2 * self.handle_radius)
+            normalized_x = max(0.0, min(1.0, normalized_x))
+            self.val = self.min_val + normalized_x * (self.max_val - self.min_val)
+            return True
+        return False
+
+    def get_value(self):
+        return self.val
+
+
+# --- Hoofdapplicatieklasse ---
+class PianoRollApp:
+    # Versie: 8a6e7c1d
+    def __init__(self):
+        pygame.init()
+        pygame.font.init()
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Neothesia Python V4")
+        self.clock = pygame.time.Clock()
+
+        self.font_small = pygame.font.Font(None, 24)
+        self.font_medium = pygame.font.Font(None, 36)
+        self.font_large = pygame.font.Font(None, 48)
+
+        self.midi_notes = []
+        self.all_tracks = []
+        self.ticks_per_beat = 0
+        self.tempo_changes = {} # {tick: microseconds_per_beat}
+
+        self.current_notes_on_screen = pygame.sprite.Group() # Voor vallende noten
+
+        self.running = True
+        self.playing = False
+        self.paused = False
+        self.start_time = 0 # Tijd (in ms) waarop afspelen is gestart
+        self.pause_offset = 0 # Tijd (in ms) die verstreken is voor de pauze
+
+        # Rollende noten snelheid: Aantal pixels per seconde.
+        # Moet afhangen van BPM en schermgrootte
+        self.note_fall_speed_factor = 1.0 # Multiplicator voor de valsnelheid
+        self.bpm = 120 # Standaard BPM, kan worden overschreven door MIDI-bestand
+        self.beats_per_measure_top = 4 # Teller van de maatsoort (bijv. 4 in 4/4)
+        self.beats_per_measure_bottom = 4 # Noemer van de maatsoort (bijv. 4 in 4/4)
+        
+        # Aangepaste instrumenten voor elke track
+        # Let op: implementatie van daadwerkelijke instrumentselectie en soundfonts
+        # komt in een latere fase. Dit is nu een placeholder UI.
+        self.track_instruments = {} # {track_name: "Piano"}
+
+        # UI Elementen
+        self.load_midi_button = Button(SCREEN_WIDTH - 200, 20, 180, 40, "Laad MIDI", self.font_medium, LIGHT_GRAY, GRAY, self.load_midi_file)
+        self.play_button = Button(20, 20, 100, 40, "Afspelen", self.font_medium, GREEN, (0,255,0), self.play_midi)
+        self.pause_button = Button(140, 20, 100, 40, "Pauze", self.font_medium, YELLOW, (255,255,0), self.pause_midi)
+        self.stop_button = Button(260, 20, 100, 40, "Stop", self.font_medium, RED, (255,100,100), self.stop_midi)
+
+        self.track_dropdown = None # Wordt geïnitialiseerd na het laden van een MIDI-bestand
+        self.instrument_dropdown = None # Wordt geïnitialiseerd na het laden van een MIDI-bestand
+        self.current_selected_track = None
+
+        self.bpm_slider = Slider(400, 20, 200, 20, 60, 240, self.bpm, self.font_small, "BPM")
+        self.fall_speed_slider = Slider(400, 50, 200, 20, 0.5, 3.0, self.note_fall_speed_factor, self.font_small, "Valsnelheid")
+        self.time_signature_top_slider = Slider(650, 20, 100, 20, 1, 16, self.beats_per_measure_top, self.font_small, "Maat (T)")
+        self.time_signature_bottom_slider = Slider(650, 50, 100, 20, 1, 16, self.beats_per_measure_bottom, self.font_small, "Maat (B)")
+
+        self.ui_elements = [
+            self.load_midi_button, self.play_button, self.pause_button, self.stop_button,
+            self.bpm_slider, self.fall_speed_slider, self.time_signature_top_slider, self.time_signature_bottom_slider
         ]
         
-        # Als we aan het einde van de MIDI zijn gekomen
-        if self.playback_state == 'playing' and self.note_data_index >= len(self.filtered_midi_notes_data) and not self.active_notes_on_screen and not self.playing_midi_notes:
-            print("Afspelen voltooid.")
-            self.playback_state = 'stopped'
-            self.midi_playback_time = 0.0
-            self.note_data_index = 0
-            self.midi_player.stop_all_notes()
-            self.keyboard.active_keys.clear()
+        self.loaded_midi_filename = ""
+        self.notes_to_spawn = [] # Lijst van noten die nog moeten verschijnen
+        self.next_note_index = 0
+
+    def load_midi_file(self):
+        Tk().withdraw() # Verberg het hoofdtkinter venster
+        # Initialiseer een bestandskiezer voor MIDI-bestanden
+        file_path = filedialog.askopenfilename(
+            title="Selecteer een MIDI-bestand",
+            filetypes=[("MIDI files", "*.mid")]
+        )
+        if file_path:
+            self.loaded_midi_filename = os.path.basename(file_path)
+            print(f"Laden van MIDI-bestand: {file_path}")
+            notes_data, track_names, ticks_per_beat, tempo_changes = parse_midi_file(file_path)
+            
+            if notes_data:
+                self.midi_notes = notes_data
+                self.all_tracks = track_names
+                self.ticks_per_beat = ticks_per_beat
+                self.tempo_changes = tempo_changes
+                print(f"MIDI bestand geladen: {len(self.midi_notes)} noten, {len(self.all_tracks)} tracks.")
+                
+                # Initialiseer track dropdown
+                self.track_dropdown = Dropdown(SCREEN_WIDTH - 200, 70, 180, 40, self.all_tracks, self.font_medium)
+                self.ui_elements.append(self.track_dropdown)
+                self.current_selected_track = self.track_dropdown.get_selected_option()
+                
+                # Initialiseer instrument dropdown (placeholder voor nu)
+                # Later zou dit dynamisch moeten zijn op basis van beschikbare soundfonts of VSTs
+                self.instrument_dropdown = Dropdown(SCREEN_WIDTH - 200, 120, 180, 40, 
+                                                    ["Piano", "Gitaar", "Trompet", "Drums"], self.font_medium)
+                self.ui_elements.append(self.instrument_dropdown)
+                
+                # Reset afspeelstatus
+                self.stop_midi()
+                self.prepare_notes_for_playback()
+            else:
+                print("Laden van MIDI-bestand mislukt of geen noten gevonden.")
+                self.midi_notes = []
+                self.all_tracks = []
+                self.ticks_per_beat = 0
+                self.tempo_changes = {}
+                # Verwijder dropdowns als geen bestand is geladen
+                if self.track_dropdown in self.ui_elements: self.ui_elements.remove(self.track_dropdown)
+                if self.instrument_dropdown in self.ui_elements: self.ui_elements.remove(self.instrument_dropdown)
+                self.track_dropdown = None
+                self.instrument_dropdown = None
 
 
-    def _draw(self):
-        """Tekent alle elementen op het scherm."""
-        self.screen.fill(BLACK) # Maak de achtergrond leeg (pianorol achtergrond)
+    def prepare_notes_for_playback(self):
+        """Filtert noten op basis van de geselecteerde track en reset de afspeelstatus."""
+        self.current_notes_on_screen.empty()
+        self.notes_to_spawn = []
+        self.next_note_index = 0
 
-        # Teken eerst de vallende noten
-        for note in self.active_notes_on_screen:
-            note.draw(self.screen)
-
-        # Teken vervolgens het toetsenbord, zodat het over de noten heen ligt
-        self.keyboard.draw(self.screen)
-
-        # Teken afspeelstatus tekst
-        font = pygame.font.Font(None, 30)
-        status_text = f"Status: {self.playback_state.capitalize()} | Track: {self.all_midi_tracks_data.get(self.selected_track_idx, {}).get('name', 'N/A')}"
-        time_text = f"Tijd: {self.midi_playback_time:.2f}s"
-        status_surface = font.render(status_text, True, WHITE)
-        time_surface = font.render(time_text, True, WHITE)
+        if self.current_selected_track:
+            self.notes_to_spawn = [
+                note for note in self.midi_notes 
+                if note['track_name'] == self.current_selected_track
+            ]
+            print(f"Geselecteerde track: '{self.current_selected_track}'. Aantal noten om af te spelen: {len(self.notes_to_spawn)}")
+        else:
+            self.notes_to_spawn = list(self.midi_notes) # Speel alle noten af als geen track geselecteerd is
+            print(f"Geen specifieke track geselecteerd. Speelt alle {len(self.notes_to_spawn)} noten af.")
         
-        self.screen.blit(status_surface, (10, 10))
-        self.screen.blit(time_surface, (10, 40))
+        # Sorteer de noten opnieuw, voor het geval dat filtering de volgorde heeft verstoord
+        self.notes_to_spawn.sort(key=lambda x: x['start_time'])
 
-        pygame.display.flip() # Update het hele scherm
+    def play_midi(self):
+        if not self.midi_notes:
+            print("Geen MIDI-bestand geladen om af te spelen.")
+            return
+
+        if self.paused:
+            self.playing = True
+            self.paused = False
+            # Pas de starttijd aan om de pauzetijd te compenseren
+            self.start_time = pygame.time.get_ticks() - self.pause_offset
+            print("Afspelen hervat.")
+        elif not self.playing:
+            self.playing = True
+            self.paused = False
+            self.start_time = pygame.time.get_ticks() # Registreer de starttijd
+            self.pause_offset = 0
+            self.current_notes_on_screen.empty() # Leeg alle noten op het scherm
+            self.next_note_index = 0 # Reset de noot-index
+            self.prepare_notes_for_playback()
+            print("Afspelen gestart.")
+
+    def pause_midi(self):
+        if self.playing:
+            self.playing = False
+            self.paused = True
+            self.pause_offset = pygame.time.get_ticks() - self.start_time # Sla de verstreken tijd op
+            print("Afspelen gepauzeerd.")
+
+    def stop_midi(self):
+        self.playing = False
+        self.paused = False
+        self.start_time = 0
+        self.pause_offset = 0
+        self.current_notes_on_screen.empty() # Verwijder alle noten van het scherm
+        self.next_note_index = 0 # Reset de noot-index
+        print("Afspelen gestopt.")
+
+    def get_current_midi_time_in_ticks(self):
+        """Berekent de huidige afspeeltijd in MIDI-ticks."""
+        if not self.playing and not self.paused:
+            return 0
+        
+        current_playback_time_ms = pygame.time.get_ticks() - self.start_time # Verstreken tijd sinds start/hervat
+        
+        # Converteer milliseconden naar ticks.
+        # Dit is complexer door tempo-wijzigingen. Voor nu een simpele benadering.
+        # In een echte implementatie moet je door de tempo_changes loopen om de exacte ticks te bepalen.
+        # Voorlopig gaan we uit van een constante BPM voor deze conversie.
+        
+        # Microseconds per beat = 60,000,000 / BPM
+        # Ticks per milliseconde = (ticks_per_beat * BPM) / 60000
+        # Ticks = current_playback_time_ms * (ticks_per_beat * BPM / 60000)
+        
+        # Vereenvoudigde benadering (voor demonstratie):
+        # Stel dat 1 beat = 1 seconde voor valsnelheid bepaling, dan 1 tick = 1/ticks_per_beat seconde.
+        # current_midi_time_ticks = (current_playback_time_ms / 1000.0) * (self.bpm / 60.0) * self.ticks_per_beat
+        
+        # Voor nauwkeurigheid met variabele tempo:
+        # Dit is een *vereenvoudigde* implementatie van tempo-handling.
+        # Een robuuste implementatie zou een lijst van (tick_time, real_time) paren moeten bijhouden
+        # en interpoleren, of de tempo_changes dictionary itereren.
+        
+        # Hier gebruiken we de huidige BPM slider waarde om ms naar ticks te converteren.
+        # Dit is niet ideaal voor MIDI-bestanden met ingebouwde tempo-wijzigingen,
+        # maar voldoende voor basis synchronisatie met een aanpasbare BPM.
+        
+        current_bpm = self.bpm_slider.get_value()
+        ms_per_beat = (60 / current_bpm) * 1000 # Milliseconden per beat
+        ticks_per_ms = self.ticks_per_beat / ms_per_beat
+        
+        return current_playback_time_ms * ticks_per_ms
 
     def run(self):
-        """Start de hoofdgame-loop van de applicatie."""
         while self.running:
-            dt = self.clock.tick(60) / 1000.0 # Max 60 FPS
+            dt = self.clock.tick(FPS) / 1000.0 # Delta time in seconden
 
-            self._handle_input()
-            self._update_playback(dt)
-            self._draw()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                
+                handled_by_ui = False
+                for element in self.ui_elements:
+                    if element.handle_event(event):
+                        handled_by_ui = True
+                        break
+                
+                if not handled_by_ui:
+                    # Specifieke handler voor dropdown selectie verandering
+                    if self.track_dropdown and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        if self.track_dropdown.is_open and any(
+                            pygame.Rect(self.track_dropdown.rect.x, 
+                                        self.track_dropdown.rect.bottom + i * self.track_dropdown.option_height, 
+                                        self.track_dropdown.rect.width, 
+                                        self.track_dropdown.option_height).collidepoint(event.pos) 
+                            for i in range(len(self.track_dropdown.options))
+                        ):
+                            # Track selectie is gewijzigd, prepareer noten opnieuw
+                            if self.current_selected_track != self.track_dropdown.get_selected_option():
+                                self.current_selected_track = self.track_dropdown.get_selected_option()
+                                self.stop_midi() # Stop en reset afspelen
+                                self.prepare_notes_for_playback() # Laad nieuwe noten voor weergave
+                                print(f"Track geselecteerd: {self.current_selected_track}")
 
-        self.midi_player.close() # Sluit audio resources
+
+            # Update logica
+            if self.playing:
+                current_midi_tick = self.get_current_midi_time_in_ticks()
+                
+                # Spawn nieuwe noten
+                while self.next_note_index < len(self.notes_to_spawn):
+                    note_info = self.notes_to_spawn[self.next_note_index]
+                    # We willen noten spawnen die op of na de huidige speeltijd zouden moeten 'beginnen'
+                    # Maar we laten ze al eerder in beeld verschijnen, zodat ze van boven kunnen vallen.
+                    # Bepaal de 'verschijntijd' van de noot bovenaan het scherm.
+                    # Dit is (start_time - tijd_om_scherm_over_te_steken).
+                    
+                    # De hoogte van de pianorol bepaalt de 'reistijd'.
+                    # We willen dat de noot precies op `start_time` de 'speellijn' bereikt (onderaan de pianorol).
+                    # De snelheid wordt beïnvloed door self.fall_speed_factor en self.bpm_slider.get_value()
+                    
+                    # Tijd die een noot nodig heeft om het scherm over te steken (in ms)
+                    # Stel dat het scherm een "hoogte" heeft in beats. Hoeveel beats passen er in de pianorol?
+                    # Een noot beweegt van boven naar beneden. De "speellijn" is de onderkant van de pianorol.
+                    # Als de noot op 'start_time' de speellijn moet bereiken, en het duurt X ms om te vallen,
+                    # dan moet de noot op (start_time_in_ms - X_ms) al beginnen met vallen.
+                    
+                    # Deze 'offset_in_ticks' bepaalt hoe ver noten vooruit worden 'voorbereid' en gespawnd.
+                    # Dit moet worden afgestemd op de valsnelheid en schermhoogte.
+                    # Voor nu een heuristische waarde, dit moet gekoppeld worden aan valsnelheid.
+                    
+                    # Hoeveel tijd (in ticks) een noot nodig heeft om van boven naar beneden te vallen.
+                    # Dit is afhankelijk van de 'visuele' valsnelheid en de lengte van de pianorol.
+                    # Laten we aannemen dat de pianorol een vaste 'visuele duur' representeert.
+                    # Bijv. 4 beats lang (dit moet aanpasbaar worden).
+                    
+                    # Stel, de pianorol toont 4 beats aan noten tegelijk.
+                    # Dan is de 'valduur' 4 beats.
+                    # Valduur in ticks = 4 * self.ticks_per_beat
+                    
+                    # De snelheid waarmee de noten bewegen is 'pixels per seconde'.
+                    # De hoogte van de roll is ROLL_HEIGHT.
+                    # Tijd om te vallen (sec) = ROLL_HEIGHT / (basis_valsnelheid * self.fall_speed_factor)
+                    # basis_valsnelheid moet hier 'pixels per tick' of 'pixels per beat' zijn
+                    
+                    # Een simpeler model: de noten reizen van boven naar beneden in een vaste 'echte tijd',
+                    # en de BPM bepaalt hoe veel ticks dat is.
+                    # Laat de noot bijvoorbeeld 2 seconden duren om te vallen.
+                    FALL_TIME_SECONDS = 2.0 / self.fall_speed_slider.get_value() # Pas valsnelheid aan
+                    fall_time_ms = FALL_TIME_SECONDS * 1000
+                    
+                    # Converteer val_tijd_ms naar MIDI ticks
+                    current_bpm = self.bpm_slider.get_value()
+                    ms_per_beat = (60 / current_bpm) * 1000
+                    ticks_per_ms = self.ticks_per_beat / ms_per_beat
+                    
+                    fall_time_ticks = fall_time_ms * ticks_per_ms
+
+                    # Spawn noot als de starttijd min de valtijd gelijk is aan of voor de huidige tijd
+                    if note_info['start_time'] - fall_time_ticks <= current_midi_tick:
+                        # Bereken de X-positie op basis van het nootnummer
+                        note_x = self.get_note_x_position(note_info['note'])
+                        
+                        # Bereken de breedte van de noot
+                        note_width = WHITE_KEY_WIDTH if note_info['note'] % 12 in [0, 2, 4, 5, 7, 9, 11] else BLACK_KEY_WIDTH
+
+                        # De noot wordt bovenaan de pianorol gespawnd
+                        note_y_start = - (note_info['duration'] / self.ticks_per_beat) * (ROLL_HEIGHT / FALL_TIME_SECONDS / (current_bpm / 60)) 
+                        # De bovenstaande berekening van note_y_start is complex. Simpeler:
+                        # De noot wordt altijd helemaal bovenaan gespawnd, en de lengte representeert de duur.
+                        # De y-positie wordt dan dynamisch berekend.
+                        
+                        # Nootlengte in pixels: afhankelijk van duur en valsnelheid
+                        # Duur in ms = (note_info['duration'] / self.ticks_per_beat) * ms_per_beat
+                        note_duration_ms = (note_info['duration'] / ticks_per_ms)
+                        note_height_pixels = (note_duration_ms / 1000.0) * (ROLL_HEIGHT / FALL_TIME_SECONDS) # pixels per seconde * duur in seconden
+                        
+                        new_note_sprite = FallingNote(
+                            note_info['note'],
+                            note_info['start_time'],
+                            note_info['duration'],
+                            note_x, 
+                            note_width, 
+                            note_height_pixels,
+                            current_bpm,
+                            self.ticks_per_beat,
+                            self.screen.get_height(), # Totale schermhoogte voor referentie
+                            KEYBOARD_HEIGHT,
+                            FALL_TIME_SECONDS
+                        )
+                        self.current_notes_on_screen.add(new_note_sprite)
+                        self.next_note_index += 1
+                    else:
+                        break # Noten zijn gesorteerd, dus we kunnen stoppen met spawnen
+
+                # Update de positie van de vallende noten
+                # Pass current_midi_tick zodat noten hun Y-positie kunnen berekenen
+                for note_sprite in self.current_notes_on_screen:
+                    note_sprite.update(current_midi_tick)
+
+                # Verwijder noten die van het scherm zijn gevallen
+                for note_sprite in self.current_notes_on_screen:
+                    if note_sprite.rect.top > self.screen.get_height() - KEYBOARD_HEIGHT: # Noten zijn beneden de speellijn
+                        # We kunnen hier later een 'trigger' toevoegen voor audio afspelen
+                        # Voor nu verwijderen we ze als ze het toetsenbord passeren
+                        if note_sprite.rect.top > self.screen.get_height(): # Helemaal buiten beeld
+                            self.current_notes_on_screen.remove(note_sprite)
+                        
+            # Rendering
+            self.draw()
+
         pygame.quit()
-        print("Neothesia Pygame MVP applicatie afgesloten.")
+        sys.exit()
 
-# --- Hoofdprogramma uitvoeren ---
+    def get_note_x_position(self, midi_note):
+        """Berekent de x-positie voor een noot op het pianotoetsenbord."""
+        # Dit is een vereenvoudigde berekening voor plaatsing op de pianorol.
+        # Een echte pianotoetsenbord layout is complexer door zwarte toetsen.
+        # Voorlopig plaatsen we ze gewoon naast elkaar.
+
+        # Aantal witte toetsen in een octaaf: C, D, E, F, G, A, B (7)
+        # Totaal aantal witte toetsen in ons bereik (A0 tot C8 = 88 toetsen)
+        # Midi 21 (A0) tot Midi 108 (C8)
+        # Totaal 88 noten.
+        
+        # We moeten de X-positie op de virtuele pianorol mapen.
+        # De breedte van de pianorol is SCREEN_WIDTH.
+        # We verdelen dit over 88 noten.
+        # Dit is een placeholder en moet nauwkeuriger worden.
+        # Voor nu: elke noot krijgt een vaste breedte, beginnend vanaf de linkerkant.
+        # MIDI noten: 21 (A0) tot 108 (C8).
+        
+        # Bereken de start X-positie voor de hele reeks noten
+        total_white_keys = 52 # Aantal witte toetsen van A0 (21) tot C8 (108)
+        # (108 - 21) + 1 = 88 totale noten.
+        # A0=21, A#0=22, B0=23, C1=24 etc.
+        
+        # Een meer realistische X-positie mapping zou zijn:
+        # Bereken de X-posities voor alle *witte* toetsen.
+        # De zwarte toetsen liggen daar tussenin en zijn smaller.
+        
+        # Offset van de start noot (A0 = MIDI 21) naar C0 (MIDI 24)
+        midi_note_relative_to_C0 = midi_note - 24 # MIDI 24 is C1
+        
+        num_white_keys_left_of_note = 0
+        current_midi_for_pos = OCTAVE_START_MIDI
+        white_key_indices = [0, 2, 4, 5, 7, 9, 11] # C, D, E, F, G, A, B
+        
+        # Bereken de x-positie op basis van de witte toetsen
+        x_offset = 0
+        for i in range(OCTAVE_START_MIDI, midi_note):
+            if i % 12 in white_key_indices:
+                x_offset += WHITE_KEY_WIDTH
+            else: # Zwarte toets
+                pass # Zwarte toetsen krijgen geen extra offset in deze telling
+        
+        # De X-coördinaat op de pianorol begint links
+        # Dit is een *uitdaging* voor een nauwkeurige weergave.
+        # Voor een simpele start: we behandelen elke noot alsof het een vaste kolom heeft.
+        # We zullen de noten plaatsen als kolommen in de pianorol.
+        # Het totale bereik van noten is 88 (van 21 tot 108).
+        # We verdelen de breedte van het scherm over deze noten.
+        
+        # Breedte per 'nootkolom' in de pianorol
+        num_playable_notes = OCTAVE_END_MIDI - OCTAVE_START_MIDI + 1 # 88 noten
+        note_column_width = SCREEN_WIDTH / num_playable_notes
+
+        # X-positie van de linkerkant van de nootkolom
+        return (midi_note - OCTAVE_START_MIDI) * note_column_width
+
+    def draw_piano_roll_background(self):
+        """Tekent de achtergrond van de pianorol (lijnen en balken)."""
+        pygame.draw.rect(self.screen, DARK_GRAY, (0, 0, SCREEN_WIDTH, ROLL_HEIGHT))
+
+        num_playable_notes = OCTAVE_END_MIDI - OCTAVE_START_MIDI + 1
+        note_column_width = SCREEN_WIDTH / num_playable_notes
+
+        # Teken verticale lijnen voor elke nootkolom
+        for i in range(num_playable_notes):
+            x = i * note_column_width
+            midi_note = OCTAVE_START_MIDI + i
+            
+            # Witte en zwarte toetsen afscheiding
+            if midi_note % 12 in [1, 3, 6, 8, 10]: # Zwarte toetsen
+                pygame.draw.line(self.screen, GRAY, (x, 0), (x, ROLL_HEIGHT), 1)
+            else: # Witte toetsen
+                pygame.draw.line(self.screen, LIGHT_GRAY, (x, 0), (x, ROLL_HEIGHT), 1)
+
+        # Teken horizontale lijnen voor maatstrepen (vereenvoudigd)
+        # Dit moet gesynchroniseerd zijn met de BPM en maataanduiding
+        # Voor nu tekenen we om de zoveel pixels een lijn
+        pixels_per_beat_visual = (ROLL_HEIGHT / (2.0 / self.fall_speed_slider.get_value())) * (60.0 / self.bpm_slider.get_value())
+        
+        #pixels_per_second = ROLL_HEIGHT / FALL_TIME_SECONDS
+        #pixels_per_beat = pixels_per_second * (60 / self.bpm_slider.get_value())
+        
+        # Aantal pixels per beat (visueel)
+        # Hoe langer de 'valsnelheid' is ingesteld, hoe meer pixels per beat
+        # Dit is een visuele weergave, niet de echte MIDI-tijd.
+        
+        # De 'speellijn' onderaan de pianorol
+        pygame.draw.line(self.screen, RED, (0, ROLL_HEIGHT), (SCREEN_WIDTH, ROLL_HEIGHT), 3)
+
+        # Horizontale lijnen om de x aantal pixels voor visuele 'beats' of 'maten'
+        # Afhankelijk van de 'pixels per beat'
+        current_y_line = ROLL_HEIGHT - pixels_per_beat_visual # Start bij de speellijn en ga omhoog
+        while current_y_line > 0:
+            if (ROLL_HEIGHT - current_y_line) % (pixels_per_beat_visual * self.beats_per_measure_top) < 10: # Maatstreep
+                pygame.draw.line(self.screen, YELLOW, (0, current_y_line), (SCREEN_WIDTH, current_y_line), 2)
+            else: # Beatstreep
+                pygame.draw.line(self.screen, GRAY, (0, current_y_line), (SCREEN_WIDTH, current_y_line), 1)
+            current_y_line -= pixels_per_beat_visual
+
+
+    def draw_piano_keyboard(self):
+        """Tekent het statische pianotoetsenbord onderaan."""
+        keyboard_y = SCREEN_HEIGHT - KEYBOARD_HEIGHT
+        pygame.draw.rect(self.screen, BLACK, (0, keyboard_y, SCREEN_WIDTH, KEYBOARD_HEIGHT))
+
+        # Teken de witte toetsen
+        white_keys_drawn = 0
+        current_x = 0
+        white_key_indices = [0, 2, 4, 5, 7, 9, 11] # C, D, E, F, G, A, B
+
+        # Bereken de start X-positie zodat de toetsen breed genoeg zijn om het hele scherm te vullen
+        total_white_keys_in_range = 0
+        for i in range(OCTAVE_START_MIDI, OCTAVE_END_MIDI + 1):
+            if i % 12 in white_key_indices:
+                total_white_keys_in_range += 1
+        
+        effective_white_key_width = SCREEN_WIDTH / total_white_keys_in_range
+        black_key_effective_width = effective_white_key_width * BLACK_KEY_WIDTH / WHITE_KEY_WIDTH # Proportioneel kleiner
+
+        key_rects = [] # Om later toetsen te kunnen highlighten indien nodig
+        
+        # Trekken witte toetsen
+        # Starten vanaf MIDI 21 (A0)
+        current_x = 0
+        for i in range(OCTAVE_START_MIDI, OCTAVE_END_MIDI + 1):
+            if i % 12 in white_key_indices: # Witte toets
+                rect = pygame.Rect(current_x, keyboard_y, effective_white_key_width, KEYBOARD_HEIGHT)
+                pygame.draw.rect(self.screen, WHITE, rect)
+                pygame.draw.rect(self.screen, BLACK, rect, 1) # Rand
+                
+                # Nootnaam toevoegen
+                note_name = get_note_name(i)
+                text_surf = self.font_small.render(note_name, True, BLACK)
+                text_rect = text_surf.get_rect(center=(rect.centerx, rect.bottom - 15))
+                self.screen.blit(text_surf, text_rect)
+                
+                current_x += effective_white_key_width
+                key_rects.append({'note': i, 'rect': rect, 'color': WHITE})
+            else:
+                # Sla zwarte toetsen voor nu over en teken ze later bovenaan de witte toetsen
+                pass
+        
+        # Trekken zwarte toetsen (bovenop de witte)
+        current_x_white_key_start = 0
+        for i in range(OCTAVE_START_MIDI, OCTAVE_END_MIDI + 1):
+            midi_note_mod_12 = i % 12
+            if midi_note_mod_12 in [1, 3, 6, 8, 10]: # Zwarte toetsen: C#, D#, F#, G#, A#
+                # De x-positie van de zwarte toets is tussen de twee witte toetsen
+                # Bijvoorbeeld: C# ligt tussen C en D.
+                # Eenvoudige benadering: plaats het op de helft van de vorige witte toets + helft van de huidige witte toets
+                # Dit is complexer om precies te doen met variabele breedtes.
+                # Voor nu, we bepalen de x-positie van de *bijbehorende* witte toets en schuiven hem dan op.
+                
+                # Vind de x-positie van de witte toets links van deze zwarte toets
+                # Bijvoorbeeld: voor C# (noot 1) is dat C (noot 0)
+                if midi_note_mod_12 == 1: # C#
+                    relative_white_note = i - 1
+                elif midi_note_mod_12 == 3: # D#
+                    relative_white_note = i - 1
+                elif midi_note_mod_12 == 6: # F#
+                    relative_white_note = i - 1
+                elif midi_note_mod_12 == 8: # G#
+                    relative_white_note = i - 1
+                elif midi_note_mod_12 == 10: # A#
+                    relative_white_note = i - 1
+                else:
+                    continue # Dit zou niet moeten gebeuren
+
+                # Bereken de x-positie van de witte toets links van de zwarte toets
+                base_white_x = self.get_note_x_position(relative_white_note) # Dit is de methode van pianorol
+                
+                # Dit is de correcte manier om de X-positie te berekenen op het toetsenbord.
+                # Zoek de x-positie van de *witte toets* die aan de linkerkant van deze zwarte toets grenst.
+                # Index van de witte toets in de array van alle witte toetsen.
+                num_white_keys_before = 0
+                for wk_midi in range(OCTAVE_START_MIDI, i):
+                    if wk_midi % 12 in white_key_indices:
+                        num_white_keys_before += 1
+                
+                black_key_x = (num_white_keys_before * effective_white_key_width) + (effective_white_key_width * 0.7) # Positioneren op 70% van de vorige witte toets
+                
+                rect = pygame.Rect(black_key_x - (black_key_effective_width / 2), keyboard_y, black_key_effective_width, KEYBOARD_HEIGHT * BLACK_KEY_HEIGHT_RATIO)
+                pygame.draw.rect(self.screen, BLACK, rect)
+                key_rects.append({'note': i, 'rect': rect, 'color': BLACK})
+
+
+    def draw_ui_elements(self):
+        """Tekent alle UI-elementen."""
+        # Toon geladen MIDI-bestandsnaam
+        if self.loaded_midi_filename:
+            text_surf = self.font_small.render(f"Geladen: {self.loaded_midi_filename}", True, BLACK)
+            self.screen.blit(text_surf, (SCREEN_WIDTH - text_surf.get_width() - 20, 160))
+
+        for element in self.ui_elements:
+            element.draw(self.screen)
+        
+        # Werk de geselecteerde track bij als de dropdown open is
+        if self.track_dropdown:
+            if self.track_dropdown.get_selected_option() != self.current_selected_track and not self.track_dropdown.is_open:
+                self.current_selected_track = self.track_dropdown.get_selected_option()
+                self.stop_midi()
+                self.prepare_notes_for_playback()
+
+
+    def draw(self):
+        self.screen.fill(WHITE) # Vul de achtergrond
+
+        self.draw_piano_roll_background()
+        
+        # Teken de vallende noten
+        self.current_notes_on_screen.draw(self.screen)
+        
+        self.draw_piano_keyboard()
+        self.draw_ui_elements()
+
+        pygame.display.flip() # Update het volledige scherm
+
+
+# --- Sprite voor vallende noten ---
+class FallingNote(pygame.sprite.Sprite):
+    def __init__(self, midi_note, start_time_ticks, duration_ticks, x_pos, width, height, current_bpm, ticks_per_beat, screen_height, keyboard_height, fall_time_seconds):
+        super().__init__()
+        self.midi_note = midi_note
+        self.start_time_ticks = start_time_ticks # Absolute starttijd in ticks
+        self.duration_ticks = duration_ticks # Duur in ticks
+        self.x_pos = x_pos # X-positie op de pianorol
+        self.width = width # Breedte van de noot
+        self.initial_height = height # Initiële hoogte van de noot op het scherm
+        
+        self.current_bpm = current_bpm
+        self.ticks_per_beat = ticks_per_beat
+        self.screen_height = screen_height
+        self.keyboard_height = keyboard_height
+        self.fall_time_seconds = fall_time_seconds # Tijd die de noot nodig heeft om het scherm over te steken
+        
+        self.image = pygame.Surface([self.width, self.initial_height])
+        self.image.fill(NOTE_COLOR)
+        self.rect = self.image.get_rect()
+        
+        # De noot wordt bovenaan het scherm gespawnd.
+        # De Y-positie zal worden berekend in update()
+        self.rect.x = int(self.x_pos)
+        self.rect.y = 0 # Placeholder, zal worden aangepast
+
+    def update(self, current_playback_time_ticks):
+        """
+        Berekent de Y-positie en hoogte van de noot op basis van de huidige afspeeltijd.
+        """
+        # Converteer MIDI-ticks naar milliseconden (real-time)
+        ms_per_beat = (60 / self.current_bpm) * 1000
+        ticks_per_ms = self.ticks_per_beat / ms_per_beat
+
+        start_time_ms = self.start_time_ticks / ticks_per_ms
+        duration_ms = self.duration_ticks / ticks_per_ms
+        current_playback_time_ms = current_playback_time_ticks / ticks_per_ms
+
+        # Y-positie van de speellijn (onderkant van de roll)
+        play_line_y = self.screen_height - self.keyboard_height
+
+        # Tijd die de noot nodig heeft om van boven naar de speellijn te vallen (in ms)
+        # Dit is de 'fall_time_seconds' van de app, geconverteerd naar ms
+        fall_time_ms = self.fall_time_seconds * 1000
+
+        # Bereken de Y-positie van de top van de noot
+        # De noot moet op `start_time_ms` de `play_line_y` bereiken
+        # y = play_line_y - ((start_time_ms - current_playback_time_ms) / fall_time_ms) * ROLL_HEIGHT
+        
+        # De 'top' van de noot beweegt
+        # De 'bodem' van de noot moet de play_line_y bereiken op start_time_ms
+        # Y_bodem = play_line_y
+        
+        # De noot beweegt met een constante snelheid in pixels/ms
+        # pixels_per_ms = (ROLL_HEIGHT) / fall_time_ms
+        
+        # Als de noot omhoog beweegt (naar boven in de pianorol), dan is de Y-coördinaat kleiner.
+        # Als de noot naar beneden beweegt, dan is de Y-coördinaat groter.
+        # De noten 'komen aan' bij play_line_y op hun start_time_ms.
+        # Hun *bovenkant* moet de play_line_y bereiken op (start_time_ms + duration_ms)
+        
+        # y_bottom (waar de noot het toetsenbord raakt) moet play_line_y zijn op start_time_ms
+        # y_top (waar de noot begint) moet op play_line_y - ROLL_HEIGHT zijn op (start_time_ms - fall_time_ms)
+        
+        # Current time difference from target hit time
+        time_to_hit_line_ms = start_time_ms - current_playback_time_ms
+        
+        # Y position of the bottom of the note
+        # This is where the note reaches the play line at `start_time_ms`
+        # If time_to_hit_line_ms is positive, the note is still above the line.
+        # If negative, it has passed the line.
+        
+        # Y positie van de onderkant van de noot:
+        # Dit is play_line_y als time_to_hit_line_ms = 0
+        # Dit is play_line_y - (pixels_per_ms * time_to_hit_line_ms)
+        
+        # pixels_per_ms = ROLL_HEIGHT / fall_time_ms
+        y_bottom_of_note = play_line_y - (time_to_hit_line_ms / fall_time_ms) * ROLL_HEIGHT
+        
+        # De hoogte van de noot verandert niet
+        self.rect.height = self.initial_height
+        
+        # Bereken de Y-positie van de *bovenkant* van de noot
+        self.rect.y = int(y_bottom_of_note - self.rect.height)
+        
+        # Verwijder noot als deze volledig buiten beeld is en voorbij de speellijn
+        if self.rect.top > self.screen_height:
+            self.kill() # Verwijdert de sprite van alle groepen
+
+
+# --- Hoofduitvoering ---
 if __name__ == "__main__":
-    # --- MIDI- en Soundfont-paden ---
-    midiFileName = "beethoven_opus10_1.mid"
-    soundfontFileName = "GeneralUser-GS.sf2"
-    # Dit is het relatieve pad vanuit de map waar je script staat
-    midi_base_dir = os.path.join(os.path.dirname(__file__), "..", "..", "midi")
-    soundfont_base_dir = os.path.join(os.path.dirname(__file__), "..", "..", "soundfonts")
-    midi_file_to_play = os.path.abspath(os.path.join(midi_base_dir, midiFileName))
-
-    # Specifiek pad voor Windows indien nodig, anders gebruikt hij de relatieve variant.
-    # Pas DIT PAD aan als je op Windows werkt en het bestand niet wordt gevonden!
-    if os.name == "nt":
-        # Voorbeeld Windows-specifiek pad: C:\Users\m.erasmus\OneDrive - Fugro\Programmacode\python\uitprobeersels\Geluid_en_muziek\Neothasia\midi
-        if(not os.path.exists(midi_file_to_play)):
-            windows_base_path = r"C:\\Users\\m.erasmus\\OneDrive - Fugro\\Programmacode\\python\\uitprobeersels\\Geluid_en_muziek\\Neothasia"
-            midi_file_to_play = os.path.join(windows_base_path, midiFileName)
-            # print(f"Windows pad gebruikt: {midi_file_to_play}") # Debugging
-
-    # Soundfont pad
-    # VERVANG DIT MET HET PAD NAAR JOUW .sf2 BESTAND!
-    # Download een gratis soundfont, bijv. "GeneralUser GS FluidSynth.sf2"
-    # en plaats deze in een 'soundfonts' map naast je script, of geef het volledige pad op.
-    # soundfont_base_dir = os.path.join(os.path.dirname(__file__), "soundfonts")
-    # soundfont_path = os.path.abspath(os.path.join(soundfont_base_dir, "GeneralUser GS FluidSynth.sf2"))
-    soundfont_path =os.path.abspath(os.path.join(soundfont_base_dir, soundfontFileName)) # Voorbeeld soundfont pad
-
-    # Controleer of het MIDI-bestand bestaat
-    if not os.path.exists(midi_file_to_play):
-        print(f"\nFOUT: Het MIDI-bestand '{midi_file_to_play}' is niet gevonden.")
-        print("Controleer het pad en zorg ervoor dat het bestand bestaat.")
-        print("Het programma kan niet starten zonder een geldig MIDI-bestand.")
-    elif not os.path.exists(soundfont_path):
-        print(f"\nWAARSCHUWING: Soundfont-bestand '{soundfont_path}' niet gevonden.")
-        print("Audio-afspelen zal niet werken. Download een .sf2 bestand en pas 'soundfont_path' aan.")
-        print("Visualisatie werkt wel.")
-        # Ga door, maar audio is uitgeschakeld
-        app = NeothesiaApp(midi_file_to_play, soundfont_path)
-        if app.running:
-            app.run()
-    else:
-        # Start de Neothesia applicatie
-        app = NeothesiaApp(midi_file_to_play, soundfont_path)
-        if app.running: # Controleer of de MIDI-parser succesvol was
-            app.run()
-
-
-# --- Hoofdprogramma uitvoeren ---
-if __name__ == "__main__":
-    # VERVANG DIT MET HET PAD NAAR JOUW MIDI-BESTAND
-    # Zorg dat je een .mid bestand hebt om te testen!
-    # Voorbeeld: midi_file_to_play = "my_awesome_song.mid"
-    midiFileName = "Alan Walker - Faded (Piano Cover Tutorial - Easy) (midi by Carlo Prato) (www.cprato.com).mid"
-    midi_file_to_play = f"../../midi/{midiFileName}" # Pas dit aan naar jouw MIDI-bestand
-    if(os.name == "nt"):
-        # Windows-specifiek pad
-        midi_file_to_play =  f"C:\\Users\\m.erasmus\\OneDrive - Fugro\\Programmacode\\AI_gerelateerd\\github\\Neothasia\\midi\\{midiFileName}" # os.path.abspath(midi_file_to_play)
-
-    if not os.path.exists(midi_file_to_play):
-        print(f"\nFOUT: Het MIDI-bestand '{midi_file_to_play}' is niet gevonden.")
-        print("Plaats een MIDI-bestand in dezelfde map als dit script of pas het pad aan.")
-        print("Het programma kan niet starten zonder een geldig MIDI-bestand.")
-    else:
-        # Start de Neothesia applicatie
-        app = NeothesiaApp(midi_file_to_play)
-        if app.running: # Controleer of de MIDI-parser succesvol was
-            app.run()
+    app = PianoRollApp()
+    app.run()
