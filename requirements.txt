@@ -1,0 +1,6 @@
+pygame
+mido
+python-rtmidi
+python-fluidsynth
+pyyaml
+requests
