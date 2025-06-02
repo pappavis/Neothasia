@@ -4,3 +4,4 @@ python-rtmidi
 python-fluidsynth
 pyyaml
 requests
+pygame-gui
