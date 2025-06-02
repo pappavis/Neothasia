@@ -1,6 +1,4 @@
-import mido
 from mido import MidiFile
-import os
 
 def get_midi_tracks(midi_path):
     try:

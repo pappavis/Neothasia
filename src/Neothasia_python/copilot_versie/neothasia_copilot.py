@@ -3,7 +3,7 @@
 import pygame
 import colorsys
 from tkinter import Tk, filedialog
-from midi_parser import load_midi
+from github.Neothasia.src.Neothasia_python.qwen_versie.midi_parser import load_midi
 from vizualizer import (
     init_visualizer,
     draw_piano,

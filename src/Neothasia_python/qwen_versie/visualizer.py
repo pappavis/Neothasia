@@ -4,10 +4,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog
 from midi_parser import load_midi_notes, get_midi_tracks
-# Kies één van de volgende twee regels:
-# from synthesizer import MIDISynthesizer  # Als je pyfluidsynth gebruikt
-from synthesizer import MIDISynthesizer  # Als je pygame.midi gebruikt
-import mido
+from synthesizer_pygame_midi import MIDISynthesizer
 
 SCREEN_WIDTH = 1000
 SCREEN_HEIGHT = 700
@@ -16,9 +13,20 @@ FPS = 60
 DEFAULT_BPM = 120
 NOTE_SPEED_BASE = 200  # pixels per seconde
 
+def note_number_to_name(note_number):
+    """Converteert MIDI-notenummer naar leesbare nootnaam."""
+    note_names = ['C', 'C#', 'D', 'D#', 'E', 'F',
+                  'F#', 'G', 'G#', 'A', 'A#', 'B']
+    octave = note_number // 12 - 1
+    note = note_names[note_number % 12]
+    return f"{note}{octave}"
+
+
 class NoteVisualizer:
     def __init__(self):
         pygame.init()
+        pygame.midi.init()
+
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Neothesia - Vallende Noten")
         self.clock = pygame.time.Clock()
@@ -35,7 +43,7 @@ class NoteVisualizer:
         self.playing = False
         self.bpm = DEFAULT_BPM
         self.note_speed = NOTE_SPEED_BASE
-        self.time_signature = (4, 4)
+        self.start_time = 0
 
         # UI Elements
         self.track_dropdown = None
@@ -150,7 +158,7 @@ class NoteVisualizer:
 
     def map_note_to_x(self, note_number):
         base_note = 21  # A0
-        white_notes = [n for n in range(base_note, 108) if len(mido.note_number_to_name(n)) == 2]
+        white_notes = [n for n in range(base_note, 108) if len(note_number_to_name(n)) == 2]
         try:
             index = white_notes.index(note_number)
             return index * 35
@@ -159,38 +167,33 @@ class NoteVisualizer:
 
     def draw_keyboard(self):
         self.screen.fill((20, 20, 20),
-                        (0, SCREEN_HEIGHT - KEYBOARD_HEIGHT, SCREEN_WIDTH, KEYBOARD_HEIGHT))
+                         (0, SCREEN_HEIGHT - KEYBOARD_HEIGHT, SCREEN_WIDTH, KEYBOARD_HEIGHT))
 
         x = 0
-        note_num = 21  # MIDI note number for A0 (lowest key on piano)
+        note_num = 21  # A0
+        while x < SCREEN_WIDTH and note_num < 108:
+            note_name = note_number_to_name(note_num)
 
-        while x < SCREEN_WIDTH:
-            try:
-                note_name = note_util.note_number_to_name(note_num)
-            except ValueError:
-                break  # Stop if we're out of valid MIDI range
-
-            if len(note_name) == 2:  # White key
+            if len(note_name) == 2:  # Witte toets
                 color = (255, 255, 255)
-            else:  # Black key
+            else:  # Zwarte toets
                 color = (0, 0, 0)
-                x -= 15  # Shift left to overlay black keys
+                x -= 15  # Maak ruimte voor zwarte toets
 
             pygame.draw.rect(self.screen, color,
-                            (x, SCREEN_HEIGHT - KEYBOARD_HEIGHT, 35, KEYBOARD_HEIGHT), 1)
+                             (x, SCREEN_HEIGHT - KEYBOARD_HEIGHT, 35, KEYBOARD_HEIGHT), 1)
 
             text = self.font.render(note_name, True, (255, 255, 255))
             self.screen.blit(text, (x + 5, SCREEN_HEIGHT - KEYBOARD_HEIGHT + 5))
 
             x += 35
             note_num += 1
-        
+
     def run(self):
         self.select_midi_file()
 
         while True:
             dt = self.clock.tick(FPS) / 1000
-            time_now = pygame.time.get_ticks() / 1000
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -205,10 +208,12 @@ class NoteVisualizer:
                     elif event.user_type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
                         if event.ui_element == self.bpm_slider:
                             self.bpm = int(event.value)
-                            self.manager.get_object_ids()[event.ui_element]["label"].set_text(f"BPM: {self.bpm}")
+                            bpm_label = self.manager.get_object_ids()[event.ui_element]["label"]
+                            bpm_label.set_text(f"BPM: {self.bpm}")
                         elif event.ui_element == self.speed_slider:
                             self.note_speed = int(event.value)
-                            self.manager.get_object_ids()[event.ui_element]["label"].set_text(f"Notensnelheid: {int(event.value)}")
+                            speed_label = self.manager.get_object_ids()[event.ui_element]["label"]
+                            speed_label.set_text(f"Notensnelheid: {int(event.value)}")
                     elif event.user_type == pygame_gui.UI_BUTTON_PRESSED:
                         if event.ui_element == self.pause_button:
                             self.paused = not self.paused
